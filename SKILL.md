@@ -1,87 +1,59 @@
 ---
 name: team-dev-agent
 description: >
-  AI-driven software development workflow for teams. Use when building or iterating on real products
-  (web, mobile, B2B SaaS) using Claude Code and Codex as coding agents. Covers full lifecycle:
-  architecture → implementation → frontend polish → quality gates → data integration testing →
-  iterative review. Activates on phrases like "帮我开发", "用claude code实现", "用codex做前端",
-  "开始做这个项目", "帮我搭一个", "写代码", "开始开发", "code up", "build this", "implement".
-  NOT for simple one-liner edits or reading code.
+  AI-driven software development workflow for teams using Claude Code and Codex.
+  Use when building or iterating on real products (web, mobile, B2B SaaS): starting
+  a new project, implementing features, reviewing code, fixing bugs, or doing full-cycle
+  development. Activates on: "帮我开发", "用claude code实现", "用codex做前端", "开始做这个项目",
+  "帮我搭一个", "写代码", "开始开发", "build this", "implement", "开发一个".
+  NOT for: simple one-liner edits, reading code only.
 ---
 
 # Team Dev Agent
 
-**目标**：用 AI coding agent 做出真正可用的产品，不是 demo，不是假数据，不是写死的 mock。
+**核心目标**：做出真正可用的产品，不是 demo，不是 mock，不是写死的假数据。
 
-## 核心分工
+## Agent 分工
 
-| 任务 | Agent | 调用模式 |
-|------|-------|---------|
-| 后端 / DB schema / API | Claude Code | `--dangerously-skip-permissions --print` |
-| 前端骨架实现 | Claude Code | 同上 |
-| **前端视觉优化** | **Codex** | `--yolo`，PTY=true |
-| Bug fix / 去冗余 review | Claude Code | 同上 |
-| 交互测试（Web端）| Claude Code + Chrome DevTools | browser 工具辅助 |
+| 任务 | Agent | 模式 |
+|------|-------|------|
+| 后端 / DB / API / 测试 / Review | Claude Code | `--dangerously-skip-permissions --print`，nohup |
+| 前端骨架（跑通为主） | Claude Code | 同上 |
+| **前端视觉优化** | **Codex** | `--yolo`，PTY=true，nohup |
+| 交互测试（Web） | Claude Code + Chrome DevTools | browser 工具 |
 
-## 标准开发流程
-
-按顺序执行，每阶段完成后才进入下一阶段。详见 `references/workflow.md`。
-
-**阶段 1 — 架构设计**
-先问清楚，再动手。包括功能拆解、技术栈选型、DB schema 草图、分期开发计划。
-→ 详见 `references/architecture.md`
-
-**阶段 2 — Claude Code 实现**
-后端优先，前后端打通，数据真实流动。禁止 mock 数据。
-→ 详见 `references/workflow.md`
-
-**阶段 3 — Codex 前端优化**
-骨架跑通后，交给 Codex 做视觉升级。
-→ 直接用 `references/frontend-prompts.md` 里的标准 prompt
-
-**阶段 4 — 质量关卡（2轮）**
-第1轮：bug fix；第2轮：去冗余、去硬编码。
-→ 详见 `references/quality-gates.md`
-
-**阶段 5 — 数据打通测试**
-前后端连通、DB真实数据、功能间联动、业务+管理后台打通。
-→ 详见 `references/quality-gates.md`
-
-**阶段 6 — 边界/交互测试**
-每轮一个测试重点，Chrome DevTools 辅助交互自动化。
-
-**阶段 7 — 迭代**
-多角度 review（可维护性 / 可扩展性 / 性能 / 安全）。
-
-## Agent 调用铁律（必读）
+## 调用模板（直接复用）
 
 ```bash
-# Claude Code 正确姿势（nohup 防 SIGHUP，&& 串联完成通知）
-nohup bash -c 'cd /path/to/project && \
-  claude --dangerously-skip-permissions --print "任务描述..." \
-  && openclaw system event --text "Done: 任务摘要" --mode now' \
-  > /tmp/claude_task.log 2>&1 &
-echo "PID: $! | log: /tmp/claude_task.log"
+# Claude Code
+nohup bash -c 'cd /path && claude --dangerously-skip-permissions --print "【任务】\n[描述]\n\n【铁律】\n禁止mock数据/硬编码，无法实现请明说，完成后跑测试" \
+  && openclaw system event --text "Done: [摘要]" --mode now' \
+  > /tmp/claude_TASK.log 2>&1 & echo "PID:$! log:/tmp/claude_TASK.log"
 
-# Codex 正确姿势
-nohup bash -c 'cd /path/to/project && \
-  codex --yolo "任务描述..." \
-  && openclaw system event --text "Done: 任务摘要" --mode now' \
-  > /tmp/codex_task.log 2>&1 &
-echo "PID: $! | log: /tmp/codex_task.log"
+# Codex（前端视觉，需 PTY）
+nohup bash -c 'cd /path && codex --yolo "[优化描述，参考 frontend-prompts.md]\n\n禁止用emoji做UI元素，只改视觉层不改业务逻辑" \
+  && openclaw system event --text "Done: [摘要]" --mode now' \
+  > /tmp/codex_TASK.log 2>&1 & echo "PID:$! log:/tmp/codex_TASK.log"
 ```
 
-**禁止**：
-- `claude -p '...' &`（exec session 结束 → SIGHUP 杀进程）
-- 在 prompt 末尾写 "When done run openclaw..."（不会真正执行）
-- Claude Code 用 PTY 模式（用 `--print` 替代）
+spawn 后每 5 分钟监控：`bash scripts/monitor_agent.sh /tmp/claude_TASK.log "任务名" $PID`
 
-**监控**：spawn 后每 5 分钟检查一次进程状态。用 `scripts/monitor_agent.sh`。
+## 7 阶段流程（按顺序）
 
-## 快速参考
+1. **架构** — 功能边界、技术栈、DB schema、分期计划 → `references/architecture.md`
+2. **实现** — 后端优先，前后端打通，全程真实数据 → `references/workflow.md`
+3. **前端优化** — Codex 做视觉升级，用标准 prompt → `references/frontend-prompts.md`
+4. **质量关卡** — 第1轮 bug fix，第2轮去冗余+去硬编码 → `references/quality-gates.md`
+5. **数据打通** — 前后端、DB、功能间、业务↔管理后台 → `references/quality-gates.md`
+6. **边界测试** — 每轮一个重点（输入/权限/并发/数据量）→ `references/workflow.md`
+7. **迭代** — 多角度 review（可维护/可扩展/性能/安全）→ `references/workflow.md`
 
-- **Agent 调用详解** → `references/agent-ops.md`
-- **完整工作流** → `references/workflow.md`
-- **前端优化 prompt** → `references/frontend-prompts.md`
-- **质量门控** → `references/quality-gates.md`
-- **架构决策** → `references/architecture.md`
+## 快速诊断
+
+| 现象 | 处理 |
+|------|------|
+| Agent 无声死亡 | `kill -0 $PID` 检查；死了看 log 最后 50 行 |
+| 前端数据是假的 | DB 手改一条数据，刷新页面，确认变了 |
+| 代码有硬编码 | `bash scripts/review_hardcode.sh /path` |
+| 前端 AI 味儿 | 用 `frontend-prompts.md` E 节（去 emoji）+ B 节（微交互） |
+| Bug 解法是"删功能" | 打回，要求给 trade-off 分析再改，加铁律 2 |

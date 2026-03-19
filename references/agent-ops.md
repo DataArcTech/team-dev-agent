@@ -1,113 +1,107 @@
-# Agent 操作规范
+# Agent 操作规范（深度参考）
 
-## Claude Code vs Codex 选择逻辑
-
-```
-后端逻辑 / DB / API / 测试 / review → Claude Code
-前端视觉 / 动效 / UI 美化         → Codex（效果明显更好）
-前端骨架（跑通为主）              → Claude Code（快）
-交互测试（Web）                   → Claude Code + browser/chrome-devtools
-```
-
-## 标准调用模板
-
-### Claude Code（后台长任务）
-
-```bash
-nohup bash -c '
-  cd /path/to/project
-  claude --dangerously-skip-permissions --print "
-    ## 任务
-    [具体任务描述]
-
-    ## 约束
-    - 禁止 mock 数据，所有数据必须从真实 DB 读取
-    - 禁止硬编码配置（API key、URL、用户数据）
-    - 实现不了请明确说明，不要用假数据绕过
-    - 完成后运行测试确认功能正常
-
-    ## 完成标准
-    [具体可验证的完成标准]
-  " && openclaw system event --text "Done: [任务摘要]" --mode now
-' > /tmp/claude_TASKNAME.log 2>&1 &
-echo "PID: $! | log: /tmp/claude_TASKNAME.log"
-```
-
-### Codex（前端优化，需 PTY）
-
-```bash
-nohup bash -c '
-  cd /path/to/project
-  codex --yolo "
-    ## 前端优化任务
-    [具体描述，参考 frontend-prompts.md 里的标准 prompt]
-
-    ## 约束
-    - 禁止用 emoji 做 UI 元素，统一用 SVG/lucide/heroicons
-    - 不改业务逻辑，只改视觉层
-    - 不引入新的依赖（除非非常必要，先问）
-  " && openclaw system event --text "Done: 前端优化完成" --mode now
-' > /tmp/codex_TASKNAME.log 2>&1 &
-echo "PID: $! | log: /tmp/codex_TASKNAME.log"
-```
+> 调用模板在 SKILL.md 里。本文件覆盖：监控、并行管理、Prompt 工程、常见坑。
 
 ## 进程监控
 
-**每 5 分钟检查一次**，用 `scripts/monitor_agent.sh`：
-
 ```bash
-bash ~/.agents/skills/team-dev-agent/scripts/monitor_agent.sh /tmp/claude_TASKNAME.log TASKNAME
+# 单个任务监控（5分钟一次）
+bash scripts/monitor_agent.sh /tmp/claude_TASK.log "任务名" $PID
+
+# 批量查所有任务
+ls /tmp/claude_*.log /tmp/codex_*.log 2>/dev/null | while read f; do
+  echo "=== $f ===" && tail -3 "$f"
+done
+
+# 手动判断进程存活
+kill -0 $PID 2>/dev/null && echo "running" || echo "dead"
 ```
 
-手动检查：
-```bash
-# 查看进度
-tail -50 /tmp/claude_TASKNAME.log
+进程死亡 → 读最后 100 行 log 判断：正常结束（有 Done/✅）还是崩溃（有 Error/Traceback）。
 
-# 查 PID 还在不在
-kill -0 <PID> && echo "running" || echo "dead"
+## 并行任务管理
 
-# 进程死了但 log 存在 → 读最后输出判断是正常结束还是崩溃
-tail -100 /tmp/claude_TASKNAME.log
+多任务并行时，log 命名要能看出任务内容：
+
+```
+/tmp/claude_backend_api.log     # 后端 API
+/tmp/claude_db_migration.log    # DB 迁移
+/tmp/codex_frontend_polish.log  # 前端视觉
+/tmp/claude_review_hardcode.log # 代码 review
 ```
 
-## Prompt 必须包含的禁令
+> 并行上限建议 3 个。超过后 context 容易互相干扰，而且一旦出错难以定位。
 
-每次给 Claude Code / Codex 的 prompt，末尾必须加：
+## Prompt 工程：必须包含的禁令
+
+每个给 Claude Code / Codex 的 prompt，末尾加：
 
 ```
 ## 铁律（不可违反）
-1. 禁止 mock 数据 / 假数据 / hardcode 数值，所有数据从真实 DB 或 API 获取
-2. 禁止极端简化（比如"删掉这个功能"来绕过 bug，要真正修复）
-3. 如果某个需求无法实现，明确说"无法实现，原因是XXX"，不要扭曲实现
-4. 禁止 console.log / print 调试语句遗留在生产代码里
-5. 每次 commit 前跑一遍现有测试，不能引入新的失败
+1. 禁止 mock/假数据/hardcode 数值，所有数据从真实 DB 或 API 获取
+2. 禁止极端简化（删功能来绕过 bug）——要真正修复，给出 trade-off 分析
+3. 无法实现请明确说"无法实现，原因是XXX"，不要扭曲实现
+4. 禁止 console.log/print 调试语句遗留
+5. commit 前跑一遍现有测试，不能引入新失败
+```
+
+## Prompt 工程：完成标准要可验证
+
+模糊完成标准（❌）：
+```
+实现用户管理功能
+```
+
+好的完成标准（✅）：
+```
+## 完成标准（全部满足才算完成）
+- [ ] GET /api/users 返回真实 DB 数据（curl 测试）
+- [ ] POST /api/users 创建后 DB 确实有新记录
+- [ ] 未登录访问返回 401
+- [ ] tsc --noEmit 零错误
+- [ ] 所有现有测试通过
 ```
 
 ## 常见坑 & 对策
 
 | 坑 | 现象 | 对策 |
 |----|------|------|
-| 极端思维 | bug 解法是"删掉这个功能" | prompt 里明确禁止，要求给 trade-off 分析再改 |
-| 印度程序员综合症 | 需求做不到，用假数据绕 | 加铁律 3，同时 review 时跑 `scripts/review_hardcode.sh` |
-| Agent 被 kill 无感知 | 进程挂了没人知道 | monitor_agent.sh 5分钟轮询 + 飞书通知 |
-| Mock 数据永远不打通 | 跑起来没问题，真实场景全崩 | 阶段 5 专门做数据打通测试 |
-| 前端 AI 味儿 | 到处是 emoji，渐变乱用 | Codex 优化阶段专用 prompt 强制去 |
+| 极端思维 | "删掉这个功能"来修 bug | 铁律 2；要求给 trade-off 再改 |
+| 印度程序员综合症 | 需求做不到，用假数据/硬编码绕过 | 铁律 1+3；事后跑 `review_hardcode.sh` |
+| Agent 无声死亡 | 进程挂了没通知 | monitor_agent.sh 轮询 + 飞书通知 |
+| Mock 永远不打通 | 演示正常，真实场景全崩 | 阶段 5 专项，手动验 DB 数据流 |
+| 前端 AI 味儿 | emoji 遍地，渐变乱用 | Codex + frontend-prompts.md E+B 节 |
+| 长程任务跑偏 | 100行后已经在做别的事 | 任务拆小（每次不超过 1 个功能模块）；中间检查点 |
+| 引入新 bug | 改 A 坏了 B | 每次修改后跑完整测试；修改范围写在 prompt 里 |
 
-## 并行任务管理
+## 任务拆分原则
 
-多个任务并行跑时，给每个任务起不同的 log 名称：
+长任务（超过 2 小时）必须拆：
 
-```bash
-/tmp/claude_backend_api.log
-/tmp/claude_db_migration.log
-/tmp/codex_frontend_ui.log
+```
+❌ 一个 prompt："实现完整的用户权限管理系统"
+
+✅ 拆成 4 个：
+  1. "实现 User / Role / Permission 三张表 + seed 数据"
+  2. "实现 JWT 登录/登出 API + 鉴权中间件"
+  3. "实现用户 CRUD API（带权限校验）"
+  4. "实现前端登录页 + 路由守卫"
 ```
 
-批量查所有任务状态：
+每个子任务完成后验收，再开下一个。
+
+## 重跑失败任务
+
 ```bash
-ls /tmp/claude_*.log /tmp/codex_*.log 2>/dev/null | while read f; do
-  echo "=== $f ==="
-  tail -3 "$f"
-done
+# 查看失败原因
+tail -100 /tmp/claude_TASK.log | grep -i "error\|exception\|failed"
+
+# 重跑时加上下文
+nohup bash -c 'cd /path && claude --dangerously-skip-permissions --print "
+  上次任务失败了，错误信息：[从 log 里复制]
+  请从失败点继续，不要重新开始整个任务。
+  具体要继续做的是：[剩余任务]
+  [铁律]
+" && openclaw system event --text "Done: 重跑完成" --mode now' \
+> /tmp/claude_TASK_retry.log 2>&1 & echo "PID:$!"
 ```
