@@ -17,26 +17,63 @@ description: >
 
 | 任务 | Agent | 模式 |
 |------|-------|------|
-| 后端 / DB / API / 测试 / Review | Claude Code | `--dangerously-skip-permissions --print`，nohup |
+| 后端 / DB / API / 测试 / Review | Claude Code | `--dangerously-skip-permissions --print`，nohup，**禁止 PTY** |
 | 前端骨架（跑通为主） | Claude Code | 同上 |
-| **前端视觉优化** | **Codex** | `--yolo`，PTY=true，nohup |
+| **前端视觉优化** | **Codex** | `--yolo`，**必须 PTY**，禁止 nohup 裸跑 |
 | 交互测试（Web） | Claude Code + Chrome DevTools | browser 工具 |
 
 ## 调用模板（直接复用）
 
-```bash
-# Claude Code
-nohup bash -c 'cd /path && claude --dangerously-skip-permissions --print "【任务】\n[描述]\n\n【铁律】\n禁止mock数据/硬编码，无法实现请明说，完成后跑测试" \
-  && openclaw system event --text "Done: [摘要]" --mode now' \
-  > /tmp/claude_TASK.log 2>&1 & echo "PID:$! log:/tmp/claude_TASK.log"
+### Claude Code（nohup + --print，无 PTY）
 
-# Codex（前端视觉，需 PTY）
-nohup bash -c 'cd /path && codex --yolo "[优化描述，参考 frontend-prompts.md]\n\n禁止用emoji做UI元素，只改视觉层不改业务逻辑" \
-  && openclaw system event --text "Done: [摘要]" --mode now' \
-  > /tmp/codex_TASK.log 2>&1 & echo "PID:$! log:/tmp/codex_TASK.log"
+```bash
+nohup bash -c '
+  cd /path/to/project && \
+  claude --dangerously-skip-permissions --print "
+    【任务】[描述]
+    【铁律】禁止mock/假数据/硬编码，无法实现请明说，完成后跑测试
+  " && \
+  openclaw system event --text "Done: [摘要]" --mode now
+' > /tmp/claude_TASK.log 2>&1 &
+echo "PID:$! | log:/tmp/claude_TASK.log"
+
+# 观测
+tail -f /tmp/claude_TASK.log
+kill -0 $PID && echo running || echo dead
 ```
 
-spawn 后每 5 分钟监控：`bash scripts/monitor_agent.sh /tmp/claude_TASK.log "任务名" $PID`
+### Codex（PTY 必须，三选一）
+
+**方案 A：exec PTY background（<15min 任务首选）**
+```python
+exec(command="cd /path && codex --yolo '任务描述'", pty=True, background=True, yieldMs=15000)
+# 拿 sessionId，然后：
+process(action=log, sessionId="sid", limit=50)   # 看输出
+process(action=poll, sessionId="sid", timeout=30000)  # 等完成
+process(action=write, sessionId="sid", data="\n")  # 如果需要确认
+```
+
+**方案 B：sessions_spawn subagent（>15min 或需并行）**
+```python
+sessions_spawn(
+  task="用 exec(pty=True,background=True) 跑 codex --yolo '任务'，持续 process(log) 观测，完成后 npm run build 验证，最后 openclaw system event 通知",
+  runtime="subagent", mode="run", label="codex-xxx"
+)
+```
+
+**方案 C：prompt 存文件 + script 录制（需完整 TTY 日志）**
+```bash
+cat > /tmp/codex_prompt.txt << 'PROMPT'
+[任务内容]
+PROMPT
+exec(command="cd /path && script -q /tmp/codex.log codex --yolo \"$(cat /tmp/codex_prompt.txt)\"", pty=True, background=True)
+exec(command="tail -50 /tmp/codex.log")  # 观测
+```
+
+> ⚠️ 禁止：`nohup ... codex --yolo ...` — 没有 TTY，codex 直接退出（`stdin is not a terminal`）
+> ⚠️ 禁止：prompt 里写 shell 命令让 claude 执行 — 完成通知必须用 `&&` 链接在进程后
+
+详细说明 → `references/agent-ops.md`
 
 ## 7 阶段流程（按顺序）
 
